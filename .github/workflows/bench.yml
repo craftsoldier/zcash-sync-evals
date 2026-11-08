@@ -43,6 +43,11 @@ jobs:
             birthday: 1300000
             tip: 1499999
             sha256: fb4f2774d0e12fdacab4dfb3ba9c5a2ee4ecf957b1614e035270848953431eaa
+          - name: orchard
+            release: data-orchard-v1
+            birthday: 2500000
+            tip: 2699999
+            sha256: 3728a9f3e707f5d760d503eab81752f28418f3ff8dff45f33e75e463e1283e4c
     env:
       RANGE: ${{ matrix.range.name }}
       BIRTHDAY: ${{ matrix.range.birthday }}

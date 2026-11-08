@@ -15,7 +15,6 @@ permissions:
   contents: read
 
 env:
-  DATA_RELEASE: data-ironwood-v1
   LIGHTWALLETD_COMMIT: 0bf0a40854de6bd9a50400f94f0f94fbb53ac743 # zcash/lightwalletd v0.6.1
   SLIPSTREAM_COMMIT: 4e49e9ddfd703cbfbdbc1fe0b1f5887e566341ea # zodl-inc/slipstream 0.4.1
   VIZOR_COMMIT: a20f0171678c1b2c316504d53b8aba4e0e8f2616 # chainapsis/vizor-wallet
@@ -35,9 +34,15 @@ jobs:
       matrix:
         range:
           - name: ironwood
+            release: data-ironwood-v1
             birthday: 3428143
             tip: 3543404
             sha256: 51e89843efd3b85ab87498c92dca2a3b0d9020ce5f813f80bf708b742de70bd9
+          - name: sapling
+            release: data-sapling-v1
+            birthday: 1300000
+            tip: 1499999
+            sha256: fb4f2774d0e12fdacab4dfb3ba9c5a2ee4ecf957b1614e035270848953431eaa
     env:
       RANGE: ${{ matrix.range.name }}
       BIRTHDAY: ${{ matrix.range.birthday }}
@@ -98,7 +103,7 @@ jobs:
       - name: Fetch chain data
         run: |
           curl -fsSL -o "$RUNNER_TEMP/data.tar.zst" \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$DATA_RELEASE/$RANGE.tar.zst"
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ matrix.range.release }}/$RANGE.tar.zst"
           echo "${{ matrix.range.sha256 }}  $RUNNER_TEMP/data.tar.zst" | sha256sum -c -
           mkdir -p "$DATA"
           zstd -dc "$RUNNER_TEMP/data.tar.zst" | tar -xf - -C "$DATA"
@@ -211,7 +216,7 @@ jobs:
             jq -s --arg range "$name" '
               def median: sort | if length % 2 == 1 then .[length / 2 | floor]
                 else (.[length / 2 - 1] + .[length / 2]) / 2 end;
-              group_by(.wallet) | map({key: .[0].wallet, value: (map(.seconds) | {runs: ., median: median,
+              group_by(.wallet) | map({key: .[0].wallet, value: (map(.seconds) | {runs: ., median: (median * 1000 | round / 1000),
                 spread_pct: (((max - min) / median * 1000 | round) / 10)})}) | from_entries | {($range): .}
             ' "$range"/round*/*/result.json
           done | jq -s 'add' > summary.json

@@ -10,7 +10,12 @@ use serde_json::Value;
 use crate::index::{Index, RpcResult};
 use crate::node::{Node, height};
 
-const CHECKED: [&str; 3] = ["z_gettreestate", "z_getsubtreesbyindex", "getaddressutxos"];
+const CHECKED: [&str; 4] = [
+    "z_gettreestate",
+    "z_getsubtreesbyindex",
+    "getaddressutxos",
+    "getaddresstxids",
+];
 
 pub fn verify(
     cache_dir: &Path,
@@ -18,7 +23,9 @@ pub fn verify(
     answers: &Path,
     heights: std::ops::RangeInclusive<u64>,
 ) {
-    let node = Node::new(Index::load(cache_dir, dir, None), Value::Null);
+    // At the tip the index was built to, which may be below the cache's last block.
+    let tip = crate::index::built_tip(dir);
+    let node = Node::new(Index::load(cache_dir, dir, Some(tip)), Value::Null);
     let rows: Vec<Value> = std::fs::read_to_string(answers)
         .expect("read answers")
         .lines()
@@ -29,9 +36,29 @@ pub fn verify(
             r.get("result").is_some()
                 && CHECKED.contains(&m)
                 && (m != "z_gettreestate"
-                    || height(&r["result"]["height"]).is_some_and(|h| heights.contains(&h)))
+                    || height(&r["result"]["height"])
+                        .is_some_and(|h| heights.contains(&h) && h <= tip))
+                // A history answer recorded past this index's tip can include
+                // later transactions, so only answers up to the tip are compared.
+                && (m != "getaddresstxids"
+                    || r["params"][0]["end"].as_u64().is_some_and(|e| e > 0 && e <= tip))
         })
         .collect();
+    // An index built to too low a tip skips rows here instead of failing them,
+    // so say how many were left out.
+    let recorded = std::fs::read_to_string(answers)
+        .expect("read answers")
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| {
+            r.get("result").is_some() && CHECKED.contains(&r["method"].as_str().unwrap_or_default())
+        })
+        .count();
+    println!(
+        "at tip {tip}: {} recorded answers compared, {} past the tip or the height range left out",
+        rows.len(),
+        recorded - rows.len()
+    );
 
     let next = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
@@ -45,7 +72,7 @@ pub fn verify(
                         let Some(row) = rows.get(i) else { return out };
                         let m = row["method"].as_str().unwrap_or_default();
                         let params = row["params"].as_array().map_or(&[][..], Vec::as_slice);
-                        out.push((i, compare(m, &row["result"], node.answer(m, params))));
+                        out.push((i, compare(m, &row["result"], node.answer(m, params), tip)));
                     }
                 })
             })
@@ -81,7 +108,7 @@ pub fn verify(
 }
 
 /// The fields that differ between a recorded answer and the index's.
-fn compare(method: &str, want: &Value, got: RpcResult) -> Vec<String> {
+fn compare(method: &str, want: &Value, got: RpcResult, tip: u64) -> Vec<String> {
     let got = match got {
         Ok(v) => v,
         Err(e) => return vec![format!("error {} {}", e.code, e.message)],
@@ -126,11 +153,23 @@ fn compare(method: &str, want: &Value, got: RpcResult) -> Vec<String> {
                 vec!["utxos".into()]
             }
         }
+        "z_getsubtreesbyindex" => {
+            // Recorded at the node's tip: only subtrees completed by this index's tip count.
+            let mut want = want.clone();
+            if let Some(a) = want["subtrees"].as_array_mut() {
+                a.retain(|t| t["end_height"].as_u64().is_some_and(|e| e <= tip));
+            }
+            if want == got {
+                vec![]
+            } else {
+                vec![method.into()]
+            }
+        }
         _ => {
             if *want == got {
                 vec![]
             } else {
-                vec!["subtrees".into()]
+                vec![method.into()]
             }
         }
     }

@@ -54,18 +54,48 @@ pub fn read_watched(path: &Path) -> HashSet<Vec<u8>> {
         .collect()
 }
 
-/// Spends and creates the watched coins in one block.
-pub fn apply(coins: &mut Coins, b: &Block, watched: &HashSet<Vec<u8>>) {
+/// A transaction that spends from or pays to a watched address.
+pub struct Touch {
+    pub script: Vec<u8>,
+    pub height: u32,
+    /// Position in its block, for answering in chain order.
+    pub position: u32,
+    /// Display (big-endian) order, as nodes give it.
+    pub txid: String,
+}
+
+/// Spends and creates the watched coins in one block, and notes each
+/// transaction that touches a watched address (repeats are removed when answering).
+pub fn apply(coins: &mut Coins, touches: &mut Vec<Touch>, b: &Block, watched: &HashSet<Vec<u8>>) {
     let height = u32::try_from(b.height).expect("height");
     for (i, tx) in b.txs.iter().enumerate() {
+        let position = u32::try_from(i).expect("position");
+        let txid = {
+            let mut t = tx.txid.clone();
+            t.reverse();
+            hex::encode(t)
+        };
         // The coinbase (first) transaction spends nothing.
         if i > 0 {
             for (prev, idx) in &tx.vin {
-                coins.remove(&outpoint(prev, *idx));
+                if let Some(c) = coins.remove(&outpoint(prev, *idx)) {
+                    touches.push(Touch {
+                        script: c.script,
+                        height,
+                        position,
+                        txid: txid.clone(),
+                    });
+                }
             }
         }
         for (idx, (value, script)) in tx.vout.iter().enumerate() {
             if watched.contains(script) {
+                touches.push(Touch {
+                    script: script.clone(),
+                    height,
+                    position,
+                    txid: txid.clone(),
+                });
                 let k = outpoint(&tx.txid, u32::try_from(idx).expect("output index"));
                 coins.insert(
                     k,
@@ -120,4 +150,42 @@ pub fn read(path: &Path) -> Coins {
         b = &r[48..];
     }
     coins
+}
+
+/// `txids.txt`: per touch, one line of `height position txid script`, in chain order.
+pub fn write_touches(path: &Path, touches: &[Touch]) {
+    let text: String = touches
+        .iter()
+        .map(|t| {
+            format!(
+                "{} {} {} {}\n",
+                t.height,
+                t.position,
+                t.txid,
+                hex::encode(&t.script)
+            )
+        })
+        .collect();
+    std::fs::write(path, text).expect("write txids.txt");
+}
+
+pub fn read_touches(path: &Path) -> Vec<Touch> {
+    std::fs::read_to_string(path)
+        .expect(
+            "read txids.txt (an index from before it existed needs `chain-index rebuild-watched`)",
+        )
+        .lines()
+        .map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let [height, position, txid, script] = f[..] else {
+                panic!("txids.txt line: {l}")
+            };
+            Touch {
+                script: hex::decode(script).expect("script"),
+                height: height.parse().expect("height"),
+                position: position.parse().expect("position"),
+                txid: txid.to_string(),
+            }
+        })
+        .collect()
 }

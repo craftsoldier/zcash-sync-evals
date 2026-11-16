@@ -9,6 +9,13 @@ use crate::index::{CANNOT_ANSWER, Index, RpcError, RpcResult};
 
 const THREADS: usize = 8;
 
+/// One log line in a single write, so the runner's round markers, appended to
+/// the same file, can never land in the middle of it.
+fn log(line: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(format!("{line}\n").as_bytes());
+}
+
 /// Recorded node replies (node.json) plus the index, answering at one tip.
 pub struct Node {
     pub index: Index,
@@ -48,18 +55,34 @@ impl Node {
             ),
             "getaddressutxos" => {
                 let q = p.first().unwrap_or(&Value::Null);
-                eprintln!("getaddressutxos {q}");
-                ix.utxos(q)
+                let r = ix.utxos(q);
+                match &r {
+                    Ok(u) => {
+                        let n = u.as_array().map_or(0, Vec::len);
+                        log(&format!("getaddressutxos {q} -> {n} utxos"));
+                    }
+                    Err(e) => log(&format!("getaddressutxos {q} -> error {}", e.code)),
+                }
+                r
+            }
+            "getaddresstxids" => {
+                let q = p.first().unwrap_or(&Value::Null);
+                let r = ix.txids(q);
+                match &r {
+                    Ok(t) => log(&format!("getaddresstxids {q} -> {t}")),
+                    Err(e) => log(&format!("getaddresstxids {q} -> error {}", e.code)),
+                }
+                r
             }
             _ => Err(RpcError::cannot_answer(format!("not answered: {method}"))),
         }
         .inspect_err(|e| {
             if e.code == CANNOT_ANSWER {
-                eprintln!(
+                log(&format!(
                     "MISS {method} {} -> {}",
                     Value::Array(p.to_vec()),
                     e.message
-                );
+                ));
             }
         })
     }

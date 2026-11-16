@@ -36,6 +36,8 @@ impl RpcError {
 pub type RpcResult = Result<Value, RpcError>;
 
 type CoinsByScript = HashMap<Vec<u8>, Vec<(OutPoint, Coin)>>;
+/// (height, position in block, txid) of each transaction touching a script.
+type TouchesByScript = HashMap<Vec<u8>, Vec<(u32, u32, String)>>;
 
 pub struct Index {
     pub cache: Cache,
@@ -50,6 +52,7 @@ pub struct Index {
     subtrees: Value,
     watched: HashSet<Vec<u8>>,
     coins: CoinsByScript,
+    touches: TouchesByScript,
 }
 
 /// The tip an index directory was built to, from its index.json.
@@ -78,6 +81,13 @@ impl Index {
         for (k, c) in utxos::read(&dir.join("utxos.bin")) {
             coins.entry(c.script.clone()).or_default().push((k, c));
         }
+        let mut touches = TouchesByScript::new();
+        for t in utxos::read_touches(&dir.join("txids.txt")) {
+            touches
+                .entry(t.script)
+                .or_default()
+                .push((t.height, t.position, t.txid));
+        }
         let cache = Cache::open(cache_dir);
         let built_tip = built_tip(dir);
         let tip = tip.unwrap_or(cache.tip());
@@ -105,6 +115,7 @@ impl Index {
             .expect("subtrees.json"),
             watched: utxos::read_watched(&dir.join("watched-addresses.txt")),
             coins,
+            touches,
         }
     }
 
@@ -200,5 +211,53 @@ impl Index {
             out.truncate(usize::try_from(m).unwrap_or(usize::MAX));
         }
         Ok(Value::Array(out))
+    }
+
+    /// getaddresstxids, for watched addresses, as Zakura gives it: start and
+    /// end clamped to the tip, a missing or zero end meaning the tip, and the
+    /// txids paying or spending any of them in [start, end], each once, in
+    /// chain order. Shapes lightwalletd does not send are refused, not guessed.
+    pub fn txids(&self, q: &Value) -> RpcResult {
+        let (Some(addrs), Some(start)) = (q["addresses"].as_array(), q["start"].as_u64()) else {
+            return Err(RpcError::cannot_answer(format!(
+                "getaddresstxids shape: {q}"
+            )));
+        };
+        // Zakura reads heights as u32; anything larger it would reject.
+        if start > u64::from(u32::MAX) || q["end"].as_u64().is_some_and(|e| e > u64::from(u32::MAX))
+        {
+            return Err(RpcError::cannot_answer(format!(
+                "getaddresstxids shape: {q}"
+            )));
+        }
+        let start = start.min(self.tip);
+        let end = q["end"]
+            .as_u64()
+            .filter(|&e| e > 0)
+            .map_or(self.tip, |e| e.min(self.tip));
+        if start > end {
+            return Err(RpcError::cannot_answer(format!(
+                "start {start} above end {end}"
+            )));
+        }
+        let mut out = std::collections::BTreeSet::new();
+        for a in addrs {
+            let addr = a.as_str().unwrap_or_default();
+            let script = utxos::address_script(addr)
+                .ok_or_else(|| RpcError::new(-5, format!("Invalid address: {addr}")))?;
+            if !self.watched.contains(&script) {
+                return Err(RpcError::cannot_answer(format!(
+                    "address not watched by this index: {addr}"
+                )));
+            }
+            for (h, pos, txid) in self.touches.get(&script).into_iter().flatten() {
+                if (start..=end).contains(&u64::from(*h)) {
+                    out.insert((*h, *pos, txid.clone()));
+                }
+            }
+        }
+        Ok(json!(
+            out.into_iter().map(|(_, _, t)| t).collect::<Vec<_>>()
+        ))
     }
 }

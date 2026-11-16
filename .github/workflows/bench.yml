@@ -16,7 +16,7 @@ permissions:
 
 env:
   LIGHTWALLETD_COMMIT: 0bf0a40854de6bd9a50400f94f0f94fbb53ac743 # zcash/lightwalletd v0.6.1
-  SLIPSTREAM_COMMIT: 4e49e9ddfd703cbfbdbc1fe0b1f5887e566341ea # zodl-inc/slipstream 0.4.1
+  SLIPSTREAM_COMMIT: 9dc7a257716d32469a4ac9f96d8c17e1f0677ae3 # zodl-inc/slipstream 0.5.0
   VIZOR_COMMIT: a20f0171678c1b2c316504d53b8aba4e0e8f2616 # chainapsis/vizor-wallet
   ZKOOL_COMMIT: 648ff1165f76106c3085344e16325b4e6da3e8dc # hhanh00/zkool2
   RUST_VERSION: 1.98.0

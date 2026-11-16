@@ -2,7 +2,7 @@
 #
 # Per range, on one standard runner: build every component at a pinned commit,
 # fetch the range's chain data from a release and check it against a pinned
-# SHA-256, then run 6 rounds, one per order of the wallets. Each wallet is timed from outside,
+# SHA-256, then run 4 rounds, each a different order of the wallets. Each wallet is timed from outside,
 # launch to exit of its `sync` step, under the same limits. Any MISS, or any
 # wallet not ending at the tip, fails the run. The results are then attested.
 
@@ -18,13 +18,15 @@ env:
   LIGHTWALLETD_COMMIT: 0bf0a40854de6bd9a50400f94f0f94fbb53ac743 # zcash/lightwalletd v0.6.1
   SLIPSTREAM_COMMIT: 4e49e9ddfd703cbfbdbc1fe0b1f5887e566341ea # zodl-inc/slipstream 0.4.1
   VIZOR_COMMIT: a20f0171678c1b2c316504d53b8aba4e0e8f2616 # chainapsis/vizor-wallet
+  ZKOOL_COMMIT: c5fead439ea56821c2c17420f19244e353d0ea8f # hhanh00/zkool2
   RUST_VERSION: 1.98.0
   # The public BIP-39 test seed: the index tracks exactly its transparent addresses.
   SEED: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art
   DELAY: 50ms
   RATE: 100mbit
-  # Every order of the three wallets once, so each runs first, second and last twice.
-  ROUNDS: zodl,vizor,vizor-asm vizor,vizor-asm,zodl vizor-asm,zodl,vizor vizor-asm,vizor,zodl vizor,zodl,vizor-asm zodl,vizor-asm,vizor
+  # Four of the 24 orders of the four wallets, chosen so each wallet runs in every
+  # position once and right after every other wallet once.
+  ROUNDS: zodl,vizor,zkool,vizor-asm vizor,vizor-asm,zodl,zkool vizor-asm,zkool,vizor,zodl zkool,zodl,vizor-asm,vizor
 
 jobs:
   bench:
@@ -121,6 +123,19 @@ jobs:
             echo "$b mulx=$(objdump -d --no-show-raw-insn "$BIN/$b" | grep -cw mulx)"
           done | tee "$RUNNER_TEMP/asm.txt"
 
+      - name: Build zkool
+        run: |
+          git clone -q https://github.com/hhanh00/zkool2 "$SRC/zkool"
+          git -C "$SRC/zkool" checkout -q "$ZKOOL_COMMIT"
+          cp wallets/zkool/main.rs "$SRC/zkool/rust/examples/sync_eval.rs"
+          # Zkool pins its own toolchain in rust-toolchain.toml, and is built with it.
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$SRC/zkool/rust-toolchain.toml")" --profile minimal
+          # Without the Flutter bridge and the Nym transport, as Zkool's server is built.
+          (cd "$SRC/zkool" && rustc --version | tee "$RUNNER_TEMP/zkool-rust.txt" \
+            && cargo build --release --locked --manifest-path rust/Cargo.toml --no-default-features --features graphql --example sync_eval)
+          cp "$SRC/zkool/target/release/examples/sync_eval" "$BIN/zkool_sync_eval"
+          rm -rf "$SRC/zkool/target"
+
       - name: Fetch chain data
         run: |
           curl -fsSL -o "$RUNNER_TEMP/data.tar.zst" \
@@ -154,7 +169,7 @@ jobs:
           sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport 9067 0xffff flowid 1:4
           tc qdisc show dev lo | tee "$RESULTS/network.txt"
 
-      - name: Run 6 rounds
+      - name: Run 4 rounds
         run: |
           export PATH="$BIN:$PATH"
           round=0
@@ -167,6 +182,7 @@ jobs:
                 zodl) cmd=(sh wallets/zodl/sync.sh) ;;
                 vizor) cmd=(sync_eval) ;;
                 vizor-asm) cmd=(sync_eval_asm) ;;
+                zkool) cmd=(zkool_sync_eval) ;;
               esac
               sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
               echo "round $round: $wallet"
@@ -192,6 +208,8 @@ jobs:
               jq -e --argjson tip "$TIP" '.synced_height == $tip and .chain_tip == $tip and .received_notes == 0
                 and .history_entries == 0 and .balance.total == 0' "$r/$v/result.json" > /dev/null
             done
+            jq -e --argjson tip "$TIP" '.synced_height == $tip and .received_notes == 0
+              and .history_entries == 0 and .balance.total == 0' "$r/zkool/result.json" > /dev/null
             z="$r/zodl/work/sync.log"
             grep -q 'notes found: sapling 0 orchard 0' "$z"
             grep -q 'utxos: 0 across' "$z"
@@ -204,9 +222,10 @@ jobs:
           mkdir -p "$RESULTS"
           {
             echo "range=$RANGE birthday=$BIRTHDAY tip=$TIP"
-            echo "lightwalletd=$LIGHTWALLETD_COMMIT slipstream=$SLIPSTREAM_COMMIT vizor=$VIZOR_COMMIT"
+            echo "lightwalletd=$LIGHTWALLETD_COMMIT slipstream=$SLIPSTREAM_COMMIT vizor=$VIZOR_COMMIT zkool=$ZKOOL_COMMIT"
             echo "vizor-asm=vizor with zakura-pasta-curves feature x86_64-asm"
             cat "$RUNNER_TEMP/asm.txt" 2>/dev/null || true
+            echo "zkool=shielded pools only, built with $(cat "$RUNNER_TEMP/zkool-rust.txt" 2>/dev/null)"
             echo "rust=$(rustc --version) go=$(go version)"
             echo "runner=$RUNNER_NAME $ImageOS $ImageVersion"
             uname -a

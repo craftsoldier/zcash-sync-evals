@@ -4,10 +4,8 @@
 //! compiles against Zkool's exact Cargo.lock and patches. It calls the same
 //! functions the app and Zkool's GraphQL server use.
 //!
-//! The account is restored with the shielded pools only (Sapling, Orchard and
-//! Ironwood). Zkool reads transparent history with GetTaddressTxids, which
-//! lightwalletd turns into `getaddresstxids`, a question chain-index does not
-//! answer. So unlike the other wallets, Zkool makes no transparent lookup here.
+//! The account is restored with every pool: transparent, Sapling, Orchard and
+//! Ironwood. Zkool reads transparent history with GetTaddressTxids.
 //!
 //!   sync_eval sync <lightwalletd-url> <birthday> <mnemonic> <wallet-dir>
 //!       Create the wallet, restore the account from the seed (`new_account`)
@@ -23,7 +21,7 @@ use anyhow::{bail, Context as _, Result};
 use rlz::api::account::{new_account, NewAccount};
 use rlz::api::coin::Coin;
 use rlz::api::sync::SyncOutcome;
-use rlz::pay::pool::{POOL_IRONWOOD, POOL_ORCHARD, POOL_SAPLING};
+use rlz::pay::pool::{POOL_IRONWOOD, POOL_ORCHARD, POOL_SAPLING, POOL_TRANSPARENT};
 use sqlx::{Connection as _, SqliteConnection};
 
 /// Mainnet.
@@ -80,7 +78,7 @@ async fn sync(server: &str, birthday: u32, mnemonic: &str, dir: &Path) -> Result
             aindex: 0,
             birth: Some(birthday),
             folder: String::new(),
-            pools: Some(POOL_SAPLING | POOL_ORCHARD | POOL_IRONWOOD),
+            pools: Some(POOL_TRANSPARENT | POOL_SAPLING | POOL_ORCHARD | POOL_IRONWOOD),
             use_internal: Some(false),
             internal: false,
             hw: 0,

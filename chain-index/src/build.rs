@@ -5,6 +5,7 @@
 //!                     a few hundred blocks of replay away
 //!   subtrees.json     every completed 2^16-leaf subtree root, per pool
 //!   utxos.bin         the watched addresses' coins at the tip
+//!   txids.txt         every transaction paying or spending a watched address
 //!   index.json        a summary, including the tip it was built to
 //!
 //! Each pool's tree is hashed on its own thread while the main thread reads.
@@ -42,6 +43,7 @@ pub fn build(cache_dir: &Path, out: &Path, watch_file: &Path, stop: Option<u64>)
     let w_i = std::thread::spawn(move || pool_worker::<Orch>(&rx_i));
 
     let mut coins = Coins::new();
+    let mut touches = Vec::new();
     let (mut sizes, mut last_ckpt_leaves, mut mismatches) = ([0u64; 3], 0u64, 0u64);
     let mut ckpt_heights = Vec::new();
     let mut batches: [Vec<Item>; 3] = Default::default();
@@ -55,7 +57,7 @@ pub fn build(cache_dir: &Path, out: &Path, watch_file: &Path, stop: Option<u64>)
             leaves[1].extend_from_slice(&tx.orchard);
             leaves[2].extend_from_slice(&tx.ironwood);
         }
-        utxos::apply(&mut coins, &b, &watched);
+        utxos::apply(&mut coins, &mut touches, &b, &watched);
 
         for ((size, stated), (batch, new)) in sizes
             .iter_mut()
@@ -141,6 +143,7 @@ pub fn build(cache_dir: &Path, out: &Path, watch_file: &Path, stop: Option<u64>)
     .expect("write subtrees.json");
 
     utxos::write(&out.join("utxos.bin"), &coins);
+    utxos::write_touches(&out.join("txids.txt"), &touches);
 
     let summary = json!({
         "tip": tip,
@@ -151,6 +154,7 @@ pub fn build(cache_dir: &Path, out: &Path, watch_file: &Path, stop: Option<u64>)
         "checkpoints": ckpt_heights.len(),
         "watched_addresses": watched.len(),
         "utxos": coins.len(),
+        "txids": touches.len(),
         "size_mismatches": mismatches,
         "seconds": started.elapsed().as_secs_f64(),
     });
@@ -162,16 +166,30 @@ pub fn build(cache_dir: &Path, out: &Path, watch_file: &Path, stop: Option<u64>)
     eprintln!("{summary}");
 }
 
-/// `rebuild-utxos`: redo only utxos.bin, for a new watch file, keeping the trees.
-pub fn rebuild_utxos(cache_dir: &Path, out: &Path, watch_file: &Path) {
+/// `rebuild-watched`: redo only what depends on the watch file (utxos.bin,
+/// txids.txt and their counts in index.json), keeping the trees.
+pub fn rebuild_watched(cache_dir: &Path, out: &Path, watch_file: &Path) {
     let watched = utxos::read_watched(watch_file);
     let cache = Cache::open(cache_dir);
     let tip = crate::index::built_tip(out);
     let mut coins = Coins::new();
-    cache.scan(cache_dir, tip, |b| utxos::apply(&mut coins, &b, &watched));
+    let mut touches = Vec::new();
+    cache.scan(cache_dir, tip, |b| {
+        utxos::apply(&mut coins, &mut touches, &b, &watched)
+    });
     utxos::write(&out.join("utxos.bin"), &coins);
+    utxos::write_touches(&out.join("txids.txt"), &touches);
     std::fs::copy(watch_file, out.join("watched-addresses.txt")).expect("copy watch file");
-    eprintln!("rebuilt {} watched UTXOs at tip {tip}", coins.len());
+    let path = out.join("index.json");
+    let mut summary: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read index.json"))
+            .expect("index.json");
+    summary["watched_addresses"] = json!(watched.len());
+    summary["utxos"] = json!(coins.len());
+    summary["txids"] = json!(touches.len());
+    std::fs::write(&path, serde_json::to_vec_pretty(&summary).expect("json"))
+        .expect("write index.json");
+    eprintln!("{summary}");
 }
 
 enum Item {
